@@ -2,16 +2,6 @@ name: Release
 
 on:
   workflow_dispatch:
-    inputs:
-      release_type:
-        description: 'Release type'
-        required: true
-        default: 'patch'
-        type: choice
-        options:
-          - patch
-          - minor
-          - major
 
 jobs:
   release:
@@ -41,17 +31,7 @@ jobs:
         id: new_version
         run: |
           CURRENT_VERSION=${{ steps.get_version.outputs.current_version }}
-          
-          if [ "${{ github.event.inputs.release_type }}" == "major" ]; then
-            # For simplicity, we'll just increment by 10 for major releases
-            NEW_VERSION=$((CURRENT_VERSION + 10))
-          elif [ "${{ github.event.inputs.release_type }}" == "minor" ]; then
-            # Increment by 5 for minor releases
-            NEW_VERSION=$((CURRENT_VERSION + 5))
-          else
-            # Increment by 1 for patch releases
-            NEW_VERSION=$((CURRENT_VERSION + 1))
-          fi
+          NEW_VERSION=$((CURRENT_VERSION + 1))
           
           echo "new_version=${NEW_VERSION}" >> $GITHUB_OUTPUT
           echo "New version will be: v${NEW_VERSION}"
