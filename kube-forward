@@ -3,7 +3,7 @@
 set -e
 
 # Version of this script
-VERSION=1
+VERSION=2
 
 # Check for updates
 check_version() {
