@@ -1,0 +1,325 @@
+#!/bin/bash
+
+set -e
+
+# Version of this script
+VERSION=1
+
+# Check for updates
+check_version() {
+    local REPO="vklimontovich/kube-forward"
+    local LATEST_VERSION=$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/' 2>/dev/null || echo "0")
+    
+    if [ "$LATEST_VERSION" != "0" ] && [ "$LATEST_VERSION" -gt "$VERSION" ]; then
+        echo "🔄 A new version (v${LATEST_VERSION}) is available! Current version: v${VERSION}"
+        echo "   Update with: /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh)\""
+        echo ""
+    fi
+}
+
+# Run version check
+check_version
+
+# Default values
+NAMESPACE=$(whoami)
+FORWARDS=()
+POD_NAME="jumpbox"
+CONTEXT=""
+
+# Colors for output
+GREEN='\033[0;32m'
+NC='\033[0m' # No Color
+
+# Helper function to build kubectl command with optional context
+kubectl_cmd() {
+    if [ -n "$CONTEXT" ]; then
+        kubectl --context="$CONTEXT" "$@"
+    else
+        kubectl "$@"
+    fi
+}
+
+# Function to parse arguments into associative array
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --namespace)
+                NAMESPACE="$2"
+                shift 2
+                ;;
+            --forward)
+                FORWARDS+=("$2")
+                shift 2
+                ;;
+            --pod-name)
+                POD_NAME="$2"
+                shift 2
+                ;;
+            --context)
+                CONTEXT="$2"
+                shift 2
+                ;;
+            --version)
+                echo "v${VERSION}"
+                exit 0
+                ;;
+            --help|-h)
+                show_help
+                exit 0
+                ;;
+            *)
+                echo "Unknown option: $1"
+                show_help
+                exit 1
+                ;;
+        esac
+    done
+}
+
+# Function to show help
+show_help() {
+    cat << EOF
+Usage: $0 [OPTIONS]
+
+Options:
+    --namespace <name>      Kubernetes namespace (default: $(whoami))
+    --forward <spec>        Port forward specification: dest_port:source_host:source_port
+                           Can be specified multiple times
+    --pod-name <name>       Name of the jumpbox pod (default: jumpbox)
+    --context <name>        Kubernetes context to use (default: current context)
+    --help, -h             Show this help message
+
+Example:
+    $0 --namespace myns \\
+       --forward 5432:database.example.com:5432 \\
+       --forward 6379:redis.example.com:6379
+
+This will make database.example.com:5432 available on localhost:5432
+and redis.example.com:6379 available on localhost:6379
+EOF
+}
+
+# Function to check K8s cluster connection
+check_k8s_connection() {
+    echo -n "🔍 Checking Kubernetes cluster connection... "
+    if ! kubectl_cmd cluster-info &>/dev/null; then
+        echo ""
+        echo "Error: Unable to connect to Kubernetes cluster"
+        echo "Please ensure kubectl is configured correctly"
+        exit 1
+    fi
+    echo -e "${GREEN}✓${NC}"
+}
+
+# Function to get current pod's forwarding config
+# Returns: The full command string from the pod's args, which looks like:
+#   "socat TCP-LISTEN:8542,fork,reuseaddr TCP:host1:5432 & socat TCP-LISTEN:9432,fork,reuseaddr TCP:host2:5432"
+# Or empty string if pod doesn't exist
+get_pod_config() {
+    local pod_exists=$(kubectl_cmd get pod "$POD_NAME" -n "$NAMESPACE" &>/dev/null && echo "true" || echo "false")
+    
+    if [ "$pod_exists" = "true" ]; then
+        # Get the pod's command to extract forwarding config
+        local pod_cmd=$(kubectl_cmd get pod "$POD_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.containers[0].args[0]}' 2>/dev/null || echo "")
+        echo "$pod_cmd"
+    else
+        echo ""
+    fi
+}
+
+# Function to check if we need to recreate the pod
+needs_recreation() {
+    local current_config="$1"
+    
+    # Build expected socat command
+    local expected_commands=""
+    for forward in "${FORWARDS[@]}"; do
+        IFS=':' read -r dest_port source_host source_port <<< "$forward"
+        if [ -n "$expected_commands" ]; then
+            expected_commands+=" & "
+        fi
+        expected_commands+="socat TCP-LISTEN:${dest_port},fork,reuseaddr TCP:${source_host}:${source_port}"
+    done
+    
+    # Check if current config contains all expected commands
+    if [[ "$current_config" == *"$expected_commands"* ]]; then
+        return 1  # No recreation needed
+    else
+        return 0  # Recreation needed
+    fi
+}
+
+# Function to prepare namespace and check existing pod
+prepare_environment() {
+    echo -n "📦 Preparing namespace... "
+    
+    # Create namespace if it doesn't exist
+    if ! kubectl_cmd get namespace "$NAMESPACE" &>/dev/null; then
+        kubectl_cmd create namespace "$NAMESPACE" &>/dev/null
+    fi
+    echo -e "${GREEN}✓${NC}"
+    
+    # Check if pod exists and has the right configuration
+    local current_config=$(get_pod_config)
+    
+    if [ -n "$current_config" ]; then
+        if needs_recreation "$current_config"; then
+            echo -n "♻️  Recreating jumpbox with new configuration... "
+            kubectl_cmd delete pod "$POD_NAME" -n "$NAMESPACE" --force --grace-period=0 &>/dev/null || true
+            kubectl_cmd wait --for=delete pod/"$POD_NAME" -n "$NAMESPACE" --timeout=30s &>/dev/null || true
+            echo -e "${GREEN}✓${NC}"
+            return 0  # Need to create pod
+        else
+            echo "🔄 Reusing existing jumpbox pod with matching configuration ${GREEN}✓${NC}"
+            return 1  # Pod exists with correct config
+        fi
+    fi
+    
+    return 0  # Need to create pod
+}
+
+# Function to create jumpbox pod with socat
+create_jumpbox_pod() {
+    echo -n "🚀 Creating jumpbox pod... "
+    
+    if [ ${#FORWARDS[@]} -eq 0 ]; then
+        echo ""
+        echo "Error: No port forwards specified"
+        echo "Use --forward option to specify port mappings"
+        exit 1
+    fi
+    
+    # Build socat command for each forward
+    local socat_commands=""
+    
+    for forward in "${FORWARDS[@]}"; do
+        IFS=':' read -r dest_port source_host source_port <<< "$forward"
+        
+        if [[ -z "$dest_port" || -z "$source_host" || -z "$source_port" ]]; then
+            echo ""
+            echo "Error: Invalid forward specification: $forward"
+            echo "Format should be: dest_port:source_host:source_port"
+            exit 1
+        fi
+        
+        # Add socat command
+        if [ -n "$socat_commands" ]; then
+            socat_commands+=" & "
+        fi
+        socat_commands+="socat TCP-LISTEN:${dest_port},fork,reuseaddr TCP:${source_host}:${source_port}"
+    done
+    
+    # Create pod YAML with alpine/socat image (has socat pre-installed)
+    cat <<EOF | kubectl_cmd apply -f - &>/dev/null
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${POD_NAME}
+  namespace: ${NAMESPACE}
+  labels:
+    app: jumpbox
+spec:
+  containers:
+  - name: socat
+    image: alpine/socat:latest
+    command: ["/bin/sh", "-c"]
+    args:
+    - |
+      ${socat_commands}
+    ports:
+$(for forward in "${FORWARDS[@]}"; do
+    dest_port=$(echo "$forward" | cut -d: -f1)
+    echo "    - containerPort: ${dest_port}"
+    echo "      protocol: TCP"
+done)
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+      limits:
+        memory: "128Mi"
+        cpu: "100m"
+    livenessProbe:
+      tcpSocket:
+        port: $(echo "${FORWARDS[0]}" | cut -d: -f1)
+      initialDelaySeconds: 2
+      periodSeconds: 5
+    readinessProbe:
+      tcpSocket:
+        port: $(echo "${FORWARDS[0]}" | cut -d: -f1)
+      initialDelaySeconds: 1
+      periodSeconds: 2
+EOF
+    
+    echo -e "${GREEN}✓${NC}"
+    
+    # Wait for pod to be ready
+    echo -n "⏳ Waiting for pod to be ready... "
+    
+    if kubectl_cmd wait --for=condition=Ready pod/"$POD_NAME" -n "$NAMESPACE" --timeout=30s &>/dev/null; then
+        echo -e "${GREEN}✓${NC}"
+    else
+        echo ""
+        echo "Error: Pod failed to become ready"
+        kubectl_cmd describe pod "$POD_NAME" -n "$NAMESPACE" | tail -20
+        exit 1
+    fi
+}
+
+# Function to setup port forwarding
+setup_port_forward() {
+    echo -n "🔗 Setting up port forwarding... "
+    
+    # Build port-forward arguments
+    local port_args=""
+    for forward in "${FORWARDS[@]}"; do
+        dest_port=$(echo "$forward" | cut -d: -f1)
+        if [ -n "$port_args" ]; then
+            port_args+=" "
+        fi
+        port_args+="${dest_port}:${dest_port}"
+    done
+    
+    echo -e "${GREEN}✓${NC}"
+    echo ""
+    echo "Available connections:"
+    for forward in "${FORWARDS[@]}"; do
+        IFS=':' read -r dest_port source_host source_port <<< "$forward"
+        echo -e "  ${GREEN}→${NC} localhost:${dest_port} forwards to ${source_host}:${source_port}"
+    done
+    echo ""
+    echo "Press Ctrl+C to stop port forwarding"
+    echo ""
+    
+    # Run port-forward (this will block)
+    kubectl_cmd port-forward -n "$NAMESPACE" "pod/$POD_NAME" $port_args
+}
+
+# Cleanup function for script exit
+cleanup_on_exit() {
+    # Don't delete the pod anymore - keep it for reuse
+    echo ""
+    echo "Port forwarding stopped. Pod kept for future use."
+}
+
+# Main execution
+main() {
+    # Parse arguments
+    parse_args "$@"
+    
+    # Set up trap for cleanup
+    trap cleanup_on_exit EXIT INT TERM
+    
+    # Execute steps
+    check_k8s_connection
+    
+    # Check if we need to create/recreate the pod
+    if prepare_environment; then
+        create_jumpbox_pod
+    fi
+    
+    setup_port_forward
+}
+
+# Run main function
+main "$@"
