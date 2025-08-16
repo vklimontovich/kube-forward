@@ -22,16 +22,6 @@ Or install manually: by downloading the script from [GitHub](https://raw.githubu
 - 🎯 **Context-aware** - Works with multiple Kubernetes contexts
 - 💾 **Resource efficient** - Minimal resource consumption (64Mi memory, 50m CPU)
 
-## Installation
-
-### Quick Install
-
-Run this command in your terminal (requires `sudo`):
-
-```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/vklimontovich/kube-forward/main/install.sh)"
-```
-
 ## Usage
 
 ### Basic Usage
