@@ -1,6 +1,18 @@
-# kube-forward
+# `kube-forward`
 
-A smart Kubernetes port forwarding tool that creates and manages jumpbox pods to make any service accessible from within your Kubernetes cluster available on localhost.
+If any service is available on your k8s cluster, you can make it accessible from your local machine using `kube-forward`. 
+
+```shell
+kube-forward --forward 5432:database.example.com:5432
+```
+
+## Installation
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/vklimontovich/kube-forward/main/install.sh)"
+```
+
+Or install manually: by downloading the script from [GitHub](https://raw.githubusercontent.com/vklimontovich/kube-forward/main/kube-forward) and placing it in your PATH.
 
 ## Features
 
@@ -14,33 +26,10 @@ A smart Kubernetes port forwarding tool that creates and manages jumpbox pods to
 
 ### Quick Install
 
-Run this command in your terminal:
+Run this command in your terminal (requires `sudo`):
 
 ```bash
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/vklimontovich/kube-forward/main/install.sh)"
-```
-
-This will:
-- Download the latest version of kube-forward
-- Install it to `/usr/local/bin/kube-forward`
-- Make it executable
-- Verify the installation
-
-### Manual Installation
-
-1. Download the script:
-```bash
-curl -O https://raw.githubusercontent.com/vklimontovich/kube-forward/main/kube-forward
-```
-
-2. Make it executable:
-```bash
-chmod +x kube-forward
-```
-
-3. Move to your PATH:
-```bash
-sudo mv kube-forward /usr/local/bin/
 ```
 
 ## Usage
@@ -48,6 +37,7 @@ sudo mv kube-forward /usr/local/bin/
 ### Basic Usage
 
 Forward a single port:
+
 ```bash
 kube-forward --forward 5432:database.example.com:5432
 ```
@@ -86,23 +76,8 @@ kube-forward --context staging --forward 8080:api.staging.svc:8080
 
 ## How It Works
 
-1. **Connection Check**: Verifies connectivity to your Kubernetes cluster
-2. **Smart Pod Management**: 
-   - Checks if a jumpbox pod exists with the required configuration
-   - Reuses existing pods when possible
-   - Recreates pods only when forwarding rules change
-3. **Socat Setup**: Uses socat inside an Alpine container for reliable TCP forwarding
-4. **Port Forwarding**: Establishes kubectl port-forward to the jumpbox pod
+The script creates a pod in that proxies the port with `socat`
+and then runs `kubectl port-forward` to forward the port from the jumpbox pod to your local machine.
 
-## Requirements
-
-- `kubectl` configured with access to your Kubernetes cluster
-- Permissions to create pods in the target namespace
-
-## License
-
-MIT
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+The pod name is `jumpbox`, and it will be placed in namespace with the same name as your current username, unless specified otherwise by the `--namespace` option.
+It will also try to reuse existing pod if port configuration is the same, or recreate it only if the forwarding rules change.

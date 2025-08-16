@@ -3,14 +3,20 @@
 set -e
 
 # Version of this script
-VERSION=2
+VERSION="__DEV_VERSION"
 
 # Check for updates
 check_version() {
-    local REPO="vklimontovich/kube-forward"
-    local LATEST_VERSION=$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/' 2>/dev/null || echo "0")
+    # Skip version check for development versions
+    if [ "$VERSION" = "__DEV_VERSION" ]; then
+        return
+    fi
     
-    if [ "$LATEST_VERSION" != "0" ] && [ "$LATEST_VERSION" -gt "$VERSION" ]; then
+    local REPO="vklimontovich/kube-forward"
+    local LATEST_VERSION=$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"v?([^"]+)".*/\1/' 2>/dev/null || echo "0")
+    
+    # Compare versions (assuming semantic versioning)
+    if [ "$LATEST_VERSION" != "0" ] && [ "$LATEST_VERSION" != "$VERSION" ]; then
         echo "🔄 A new version (v${LATEST_VERSION}) is available! Current version: v${VERSION}"
         echo "   Update with: /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh)\""
         echo ""
@@ -60,7 +66,11 @@ parse_args() {
                 shift 2
                 ;;
             --version)
-                echo "v${VERSION}"
+                if [ "$VERSION" = "__DEV_VERSION" ]; then
+                    echo "development version"
+                else
+                    echo "v${VERSION}"
+                fi
                 exit 0
                 ;;
             --help|-h)

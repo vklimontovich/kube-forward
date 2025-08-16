@@ -1,79 +1,45 @@
 name: Release
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
 
 jobs:
   release:
+    name: Release
     runs-on: ubuntu-latest
     
-    permissions:
-      contents: write
-      
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
           
-      - name: Configure Git
-        run: |
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-          
-      - name: Get current version
-        id: get_version
-        run: |
-          CURRENT_VERSION=$(grep "^VERSION=" kube-forward | cut -d'=' -f2)
-          echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
-          
-      - name: Calculate new version
-        id: new_version
-        run: |
-          CURRENT_VERSION=${{ steps.get_version.outputs.current_version }}
-          NEW_VERSION=$((CURRENT_VERSION + 1))
-          
-          echo "new_version=${NEW_VERSION}" >> $GITHUB_OUTPUT
-          echo "New version will be: v${NEW_VERSION}"
-          
-      - name: Update version in script
-        run: |
-          sed -i "s/^VERSION=.*/VERSION=${{ steps.new_version.outputs.new_version }}/" kube-forward
-          
-      - name: Commit version bump
-        run: |
-          git add kube-forward
-          git commit -m "Bump version to v${{ steps.new_version.outputs.new_version }}"
-          git push
-          
-      - name: Create release tag
-        run: |
-          git tag "v${{ steps.new_version.outputs.new_version }}"
-          git push origin "v${{ steps.new_version.outputs.new_version }}"
-          
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          tag_name: v${{ steps.new_version.outputs.new_version }}
-          name: Release v${{ steps.new_version.outputs.new_version }}
-          body: |
-            ## What's Changed
+          node-version: '20'
+          
+      - name: Install semantic-release
+        run: |
+          npm install -g \
+            semantic-release \
+            @semantic-release/changelog \
+            @semantic-release/git \
+            @semantic-release/github \
+            @semantic-release/exec \
+            @semantic-release/commit-analyzer \
+            @semantic-release/release-notes-generator
             
-            Version bump from v${{ steps.get_version.outputs.current_version }} to v${{ steps.new_version.outputs.new_version }}
-            
-            ## Installation
-            
-            ```bash
-            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh)"
-            ```
-            
-            Or download directly:
-            ```bash
-            curl -LO https://github.com/${{ github.repository }}/releases/download/v${{ steps.new_version.outputs.new_version }}/kube-forward
-            chmod +x kube-forward
-            sudo mv kube-forward /usr/local/bin/
-            ```
-          files: |
-            kube-forward
-          draft: false
-          prerelease: false
+      - name: Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: semantic-release
